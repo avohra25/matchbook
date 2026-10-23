@@ -1,0 +1,16 @@
+# A small session: build a book, sweep it, trigger a stop, then reprice.
+sell 1 10 101 trader=1
+sell 2 5  102 trader=2
+sell 3 8  104 trader=3
+buy  4 6  99  trader=4
+buy  5 4  98  trader=5
+book
+
+buy  10 3 market stop=102 trader=9   # parks until something trades at >= 102
+buy  11 12 102 trader=6               # sweeps 101 and 2 @ 102, fires the stop
+book
+
+modify 4 100 6                         # reprice the bid: loses priority
+sell 12 4 99 ioc trader=7              # hits 100 first
+cancel 5
+book

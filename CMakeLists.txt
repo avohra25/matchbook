@@ -20,6 +20,10 @@ if(MATCHBOOK_SANITIZE)
   target_link_options(matchbook PUBLIC -fsanitize=address,undefined)
 endif()
 
+add_executable(matchbook_cli tools/matchbook_cli.cpp)
+target_link_libraries(matchbook_cli PRIVATE matchbook)
+set_target_properties(matchbook_cli PROPERTIES OUTPUT_NAME matchbook)
+
 enable_testing()
 file(GLOB MATCHBOOK_TESTS CONFIGURE_DEPENDS tests/test_*.cpp)
 foreach(test_src ${MATCHBOOK_TESTS})
@@ -29,3 +33,5 @@ foreach(test_src ${MATCHBOOK_TESTS})
   target_compile_options(${test_name} PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Werror)
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
+
+add_test(NAME cli_example COMMAND matchbook_cli ${CMAKE_SOURCE_DIR}/examples/session.txt)
