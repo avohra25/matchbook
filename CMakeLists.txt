@@ -24,6 +24,10 @@ add_executable(matchbook_cli tools/matchbook_cli.cpp)
 target_link_libraries(matchbook_cli PRIVATE matchbook)
 set_target_properties(matchbook_cli PROPERTIES OUTPUT_NAME matchbook)
 
+add_executable(matchbook_bench tools/bench.cpp)
+target_link_libraries(matchbook_bench PRIVATE matchbook)
+set_target_properties(matchbook_bench PROPERTIES OUTPUT_NAME matchbook-bench)
+
 enable_testing()
 file(GLOB MATCHBOOK_TESTS CONFIGURE_DEPENDS tests/test_*.cpp)
 foreach(test_src ${MATCHBOOK_TESTS})
@@ -35,3 +39,4 @@ foreach(test_src ${MATCHBOOK_TESTS})
 endforeach()
 
 add_test(NAME cli_example COMMAND matchbook_cli ${CMAKE_SOURCE_DIR}/examples/session.txt)
+add_test(NAME bench_smoke COMMAND matchbook_bench --ops=20000)
