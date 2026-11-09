@@ -1,0 +1,16 @@
+# Iceberg orders and the level-2 feed. Run with --md to see market data.
+sell 1 30 101 display=5 trader=1     # shows 5 of 30
+sell 2 4  101 trader=2               # plain order queued behind it
+sell 3 10 102 trader=3
+book
+
+buy  10 7 101 trader=9               # 5 from the iceberg, which replenishes behind
+                                     # order 2, then 2 from order 2
+book
+
+buy  11 12 101 trader=8              # order 2's last 2, then slice by slice
+modify 1 101 8                       # shrink 15 -> 8: only the hidden reserve shrinks, so no L2 update
+book
+
+buy  12 40 102 display=10 trader=7   # aggressive iceberg sweeps, rests 10 showing
+book

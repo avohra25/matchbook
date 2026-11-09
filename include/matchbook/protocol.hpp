@@ -36,7 +36,7 @@ public:
 
 /// Parses one line of the text protocol:
 ///
-///   buy|sell <id> <qty> <price|market> [gtc|ioc|fok] [post] [stop=<px>] [trader=<n>]
+///   buy|sell <id> <qty> <price|market> [gtc|ioc|fok] [post] [stop=<px>] [display=<n>] [trader=<n>]
 ///   cancel <id>
 ///   modify <id> <price> <qty>
 ///   book [levels]

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(matchbook VERSION 0.1.0 LANGUAGES CXX)
+project(matchbook VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,4 +39,6 @@ foreach(test_src ${MATCHBOOK_TESTS})
 endforeach()
 
 add_test(NAME cli_example COMMAND matchbook_cli ${CMAKE_SOURCE_DIR}/examples/session.txt)
+add_test(NAME cli_iceberg COMMAND matchbook_cli --md ${CMAKE_SOURCE_DIR}/examples/iceberg.txt)
 add_test(NAME bench_smoke COMMAND matchbook_bench --ops=20000)
+add_test(NAME bench_smoke_icebergs_md COMMAND matchbook_bench --ops=20000 --icebergs=20 --md)

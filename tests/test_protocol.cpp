@@ -33,6 +33,42 @@ TEST(parses_cancel_modify_and_book) {
     CHECK(std::get<BookCmd>(*parse_command("book 2")) == BookCmd{2});
 }
 
+TEST(parses_iceberg_display_option) {
+    auto o = std::get<NewOrder>(*parse_command("sell 9 100 101 display=10 trader=2"));
+    CHECK_EQ(o.display, 10);
+    CHECK_EQ(o.qty, 100);
+    CHECK_EQ(o.trader, 2u);
+    auto all = std::get<NewOrder>(*parse_command("buy 1 50 99 gtc post stop=100 display=5 trader=1"));
+    CHECK(all.post_only);
+    CHECK_EQ(all.display, 5);
+    CHECK_THROWS(parse_command("buy 1 50 99 display=0"));
+    CHECK_THROWS(parse_command("buy 1 50 99 display=-3"));
+    CHECK_THROWS(parse_command("buy 1 50 99 display=x"));
+}
+
+TEST(iceberg_session_with_market_data) {
+    Engine e;
+    e.enable_market_data();
+    std::vector<std::string> out;
+    for (const char* line : {"sell 1 9 101 display=3 trader=1", "sell 2 4 101 trader=2", "buy 3 5 101 trader=3"}) {
+        for (auto& l : run_command(e, *parse_command(line))) out.push_back(l);
+        for (auto& u : e.take_level_updates()) out.push_back(to_string(u));
+    }
+    CHECK_EQ(out, (std::vector<std::string>{
+                      "ACCEPTED id=1",
+                      "RESTED id=1 side=sell px=101 qty=3 hidden=6",
+                      "L2 ask px=101 qty=3 orders=1",
+                      "ACCEPTED id=2",
+                      "RESTED id=2 side=sell px=101 qty=4",
+                      "L2 ask px=101 qty=7 orders=2",
+                      "ACCEPTED id=3",
+                      "TRADE taker=3 maker=1 side=buy px=101 qty=3",
+                      "REPLENISHED id=1 qty=3 hidden=3",
+                      "TRADE taker=3 maker=2 side=buy px=101 qty=2",
+                      "L2 ask px=101 qty=5 orders=2",
+                  }));
+}
+
 TEST(blank_and_comment_lines_are_skipped) {
     CHECK(!parse_command(""));
     CHECK(!parse_command("   "));

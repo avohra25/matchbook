@@ -36,8 +36,8 @@ void expect_args(const std::vector<std::string_view>& t, std::size_t min, std::s
 
 NewOrder parse_order(const std::vector<std::string_view>& t) {
     constexpr const char* usage =
-        "buy|sell <id> <qty> <price|market> [gtc|ioc|fok] [post] [stop=<px>] [trader=<n>]";
-    expect_args(t, 4, 8, usage);
+        "buy|sell <id> <qty> <price|market> [gtc|ioc|fok] [post] [stop=<px>] [display=<n>] [trader=<n>]";
+    expect_args(t, 4, 9, usage);
     NewOrder o;
     o.side = t[0] == "buy" ? Side::Buy : Side::Sell;
     o.id = number<OrderId>(t[1], "order id");
@@ -55,7 +55,10 @@ NewOrder parse_order(const std::vector<std::string_view>& t) {
         else if (opt == "fok") o.tif = TimeInForce::FOK;
         else if (opt == "post") o.post_only = true;
         else if (opt.starts_with("stop=")) o.stop = number<Price>(opt.substr(5), "stop price");
-        else if (opt.starts_with("trader=")) o.trader = number<TraderId>(opt.substr(7), "trader id");
+        else if (opt.starts_with("display=")) {
+            o.display = number<Qty>(opt.substr(8), "display quantity");
+            if (o.display <= 0) throw ParseError("display quantity must be positive");
+        } else if (opt.starts_with("trader=")) o.trader = number<TraderId>(opt.substr(7), "trader id");
         else throw ParseError("unknown option '" + std::string(opt) + "'");
     }
     return o;

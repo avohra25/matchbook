@@ -7,14 +7,17 @@
 
 namespace {
 void usage() {
-    std::cerr << "usage: matchbook [--stp=none|cancel-taker|cancel-maker|cancel-both] [--echo] [script]\n"
-                 "Reads commands from the script (or stdin) and prints engine events.\n";
+    std::cerr << "usage: matchbook [--stp=none|cancel-taker|cancel-maker|cancel-both] [--echo] [--md] [script]\n"
+                 "Reads commands from the script (or stdin) and prints engine events.\n"
+                 "  --echo  print each command before its output\n"
+                 "  --md    after each command, print the level-2 market-data updates it caused\n";
 }
 }  // namespace
 
 int main(int argc, char** argv) {
     mb::StpMode stp = mb::StpMode::None;
     bool echo = false;
+    bool market_data = false;
     std::string path;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -23,6 +26,8 @@ int main(int argc, char** argv) {
             return 0;
         } else if (arg == "--echo") {
             echo = true;
+        } else if (arg == "--md") {
+            market_data = true;
         } else if (arg.rfind("--stp=", 0) == 0) {
             auto mode = mb::parse_stp_mode(arg.substr(6));
             if (!mode) {
@@ -49,6 +54,7 @@ int main(int argc, char** argv) {
     std::istream& in = path.empty() ? std::cin : file;
 
     mb::Engine engine(stp);
+    engine.enable_market_data(market_data);
     int errors = 0;
     std::size_t line_no = 0;
     for (std::string line; std::getline(in, line);) {
@@ -58,6 +64,8 @@ int main(int argc, char** argv) {
             if (!cmd) continue;
             if (echo) std::cout << "> " << line << "\n";
             for (const auto& out : mb::run_command(engine, *cmd)) std::cout << out << "\n";
+            if (market_data)
+                for (const auto& u : engine.take_level_updates()) std::cout << u << "\n";
         } catch (const mb::ParseError& e) {
             ++errors;
             std::cerr << "line " << line_no << ": " << e.what() << "\n";

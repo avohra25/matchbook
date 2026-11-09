@@ -20,7 +20,7 @@ struct Op {
     mb::Qty qty;
 };
 
-std::vector<Op> generate(std::size_t n, std::uint64_t seed) {
+std::vector<Op> generate(std::size_t n, std::uint64_t seed, int iceberg_pct) {
     std::mt19937_64 rng(seed);
     auto uni = [&](long lo, long hi) { return std::uniform_int_distribution<long>(lo, hi)(rng); };
     std::vector<Op> ops;
@@ -52,6 +52,10 @@ std::vector<Op> generate(std::size_t n, std::uint64_t seed) {
                 // Mostly passive orders a few ticks behind the mid, some aggressive.
                 long offset = uni(-3, 25);
                 o.price = o.side == mb::Side::Buy ? mid - offset : mid + offset;
+                if (uni(0, 99) < iceberg_pct) {
+                    o.qty = uni(100, 1000);
+                    o.display = uni(10, 50);
+                }
                 recent.push_back(o.id);
             }
             ops.push_back({Op::Submit, o, 0, 0, 0});
@@ -65,18 +69,24 @@ std::vector<Op> generate(std::size_t n, std::uint64_t seed) {
 int main(int argc, char** argv) {
     std::size_t n = 1'000'000;
     std::uint64_t seed = 42;
+    int iceberg_pct = 0;
+    bool market_data = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a.rfind("--ops=", 0) == 0) n = std::strtoull(a.c_str() + 6, nullptr, 10);
         else if (a.rfind("--seed=", 0) == 0) seed = std::strtoull(a.c_str() + 7, nullptr, 10);
+        else if (a.rfind("--icebergs=", 0) == 0) iceberg_pct = std::clamp(std::atoi(a.c_str() + 11), 0, 100);
+        else if (a == "--md") market_data = true;
         else {
-            std::fprintf(stderr, "usage: matchbook-bench [--ops=N] [--seed=S]\n");
+            std::fprintf(stderr, "usage: matchbook-bench [--ops=N] [--seed=S] [--icebergs=PCT] [--md]\n");
             return 2;
         }
     }
 
-    const auto ops = generate(n, seed);
+    const auto ops = generate(n, seed, iceberg_pct);
     mb::Engine engine;
+    engine.enable_market_data(market_data);
+    std::size_t updates = 0;
     std::vector<std::uint32_t> latency_ns(ops.size());
     std::size_t trades = 0;
     using clock = std::chrono::steady_clock;
@@ -88,6 +98,7 @@ int main(int argc, char** argv) {
         std::vector<mb::Event> events = op.kind == Op::Submit   ? engine.submit(op.order)
                                         : op.kind == Op::Cancel ? engine.cancel(op.id)
                                                                 : engine.modify(op.id, op.price, op.qty);
+        if (market_data) updates += engine.take_level_updates().size();
         const auto t1 = clock::now();
         latency_ns[i] = static_cast<std::uint32_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
         for (const auto& e : events) trades += std::holds_alternative<mb::ev::Trade>(e);
@@ -100,6 +111,7 @@ int main(int argc, char** argv) {
     };
     std::printf("commands       %zu\n", ops.size());
     std::printf("trades         %zu\n", trades);
+    if (market_data) std::printf("L2 updates     %zu\n", updates);
     std::printf("resting orders %zu (%zu bid levels, %zu ask levels)\n", engine.book().order_count(),
                 engine.book().level_count(mb::Side::Buy), engine.book().level_count(mb::Side::Sell));
     std::printf("throughput     %.2f M commands/s\n", static_cast<double>(ops.size()) / secs / 1e6);
