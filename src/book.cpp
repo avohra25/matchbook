@@ -44,6 +44,27 @@ void Book::set_remaining(OrderId id, Qty remaining) {
     loc.it->remaining = remaining;
 }
 
+void Book::set_hidden(OrderId id, Qty hidden) {
+    if (hidden < 0) throw std::invalid_argument("hidden quantity must not be negative");
+    auto found = index_.find(id);
+    if (found == index_.end())
+        throw std::invalid_argument("unknown order id " + std::to_string(id));
+    found->second.it->hidden = hidden;
+}
+
+void Book::requeue(OrderId id, Qty visible, Qty hidden, std::uint64_t seq) {
+    const Resting* current = find(id);
+    if (current == nullptr) throw std::invalid_argument("unknown order id " + std::to_string(id));
+    if (visible <= 0) throw std::invalid_argument("resting quantity must be positive");
+    if (hidden < 0) throw std::invalid_argument("hidden quantity must not be negative");
+    Resting moved = *current;
+    moved.remaining = visible;
+    moved.hidden = hidden;
+    moved.seq = seq;
+    erase(id);
+    insert(moved);
+}
+
 const Resting* Book::find(OrderId id) const {
     auto found = index_.find(id);
     return found == index_.end() ? nullptr : &*found->second.it;

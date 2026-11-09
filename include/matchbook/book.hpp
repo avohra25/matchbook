@@ -19,6 +19,10 @@ struct Resting {
     Price price = 0;
     Qty remaining = 0;
     std::uint64_t seq = 0;  ///< arrival sequence, used for time priority
+    /// Iceberg orders only: quantity held in reserve behind the visible
+    /// `remaining` slice, and the slice size used to replenish it.
+    Qty hidden = 0;
+    Qty display = 0;
 
     bool operator==(const Resting&) const = default;
 };
@@ -29,7 +33,8 @@ struct Level {
     std::list<Resting> orders;
 };
 
-/// Aggregated view of one price level, as published in market data.
+/// Aggregated view of one price level, as published in market data. Only
+/// visible quantity is counted; iceberg reserves stay hidden.
 struct LevelView {
     Price price = 0;
     Qty qty = 0;
@@ -59,6 +64,15 @@ public:
     /// Throws std::invalid_argument for unknown ids or quantity <= 0.
     void set_remaining(OrderId id, Qty remaining);
 
+    /// Changes an order's hidden reserve without touching its queue position.
+    /// Throws std::invalid_argument for unknown ids or quantity < 0.
+    void set_hidden(OrderId id, Qty hidden);
+
+    /// Gives an order a new visible slice and hidden reserve and moves it to
+    /// the back of its price level with a new sequence number (iceberg
+    /// replenishment: each new slice queues like a fresh order).
+    void requeue(OrderId id, Qty visible, Qty hidden, std::uint64_t seq);
+
     [[nodiscard]] const Resting* find(OrderId id) const;
     [[nodiscard]] bool contains(OrderId id) const { return index_.contains(id); }
 
@@ -69,6 +83,7 @@ public:
     /// Oldest order at the best price on `side`, or nullptr when that side is empty.
     [[nodiscard]] const Resting* front(Side side) const;
 
+    /// Visible quantity at a price (iceberg reserves are not included).
     [[nodiscard]] Qty volume_at(Side side, Price price) const;
     /// Up to `max_levels` levels from the best price outward.
     [[nodiscard]] std::vector<LevelView> depth(Side side, std::size_t max_levels) const;

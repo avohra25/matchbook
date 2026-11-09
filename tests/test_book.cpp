@@ -100,3 +100,28 @@ TEST(walk_visits_in_price_time_priority_and_can_stop_early) {
     b.walk(Side::Buy, [&](const Resting& r) { seen.push_back(r.id); return seen.size() < 2; });
     CHECK_EQ(seen, (std::vector<OrderId>{2, 1}));
 }
+
+TEST(requeue_moves_order_to_back_with_new_quantities) {
+    Book b;
+    b.insert(Resting{1, 1, Side::Sell, 100, 3, 1, 9, 3});
+    b.insert(Resting{2, 2, Side::Sell, 100, 4, 2});
+    b.requeue(1, 3, 6, 3);
+    CHECK_EQ(b.front(Side::Sell)->id, 2u);
+    CHECK_EQ(b.find(1)->hidden, 6);
+    CHECK_EQ(b.find(1)->seq, 3u);
+    CHECK_EQ(b.volume_at(Side::Sell, 100), 7);  // hidden reserve is not counted
+    CHECK_THROWS(b.requeue(99, 1, 0, 4));
+    CHECK_THROWS(b.requeue(1, 0, 0, 4));
+    CHECK(b.contains(1));  // a rejected requeue leaves the order alone
+}
+
+TEST(set_hidden_keeps_queue_position) {
+    Book b;
+    b.insert(Resting{1, 1, Side::Buy, 100, 3, 1, 9, 3});
+    b.insert(Resting{2, 2, Side::Buy, 100, 4, 2});
+    b.set_hidden(1, 2);
+    CHECK_EQ(b.front(Side::Buy)->id, 1u);
+    CHECK_EQ(b.find(1)->hidden, 2);
+    CHECK_THROWS(b.set_hidden(1, -1));
+    CHECK_THROWS(b.set_hidden(42, 1));
+}

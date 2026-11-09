@@ -44,6 +44,7 @@ std::string to_string(const Event& e) {
                    },
                    [&](const ev::Rested& r) {
                        os << "RESTED id=" << r.id << " side=" << r.side << " px=" << r.price << " qty=" << r.qty;
+                       if (r.hidden > 0) os << " hidden=" << r.hidden;
                    },
                    [&](const ev::Cancelled& c) {
                        os << "CANCELLED id=" << c.id << " remaining=" << c.remaining
@@ -55,6 +56,9 @@ std::string to_string(const Event& e) {
                    },
                    [&](const ev::StopParked& s) { os << "STOP_PARKED id=" << s.id << " stop=" << s.stop; },
                    [&](const ev::StopTriggered& s) { os << "STOP_TRIGGERED id=" << s.id << " last=" << s.last; },
+                   [&](const ev::Replenished& r) {
+                       os << "REPLENISHED id=" << r.id << " qty=" << r.qty << " hidden=" << r.hidden;
+                   },
                },
                e);
     return os.str();
@@ -84,7 +88,7 @@ bool Engine::fok_fillable(const NewOrder& o) const {
             // CancelMaker skips the order; the other modes end matching here.
             return stp_ == StpMode::CancelMaker;
         }
-        available += r.remaining;
+        available += r.remaining + r.hidden;  // hidden reserve is still fillable
         return available < o.qty;
     });
     return available >= o.qty;
@@ -97,7 +101,9 @@ std::vector<Event> Engine::submit(const NewOrder& o) {
         return std::move(out_);
     };
     if (live(o.id)) return reject(RejectReason::DuplicateId);
-    if (o.qty <= 0) return reject(RejectReason::InvalidQuantity);
+    if (o.qty <= 0 || o.display < 0) return reject(RejectReason::InvalidQuantity);
+    if (o.display > 0 && (o.type == OrderType::Market || o.tif != TimeInForce::GTC))
+        return reject(RejectReason::InvalidCombination);
     if (o.type == OrderType::Limit && o.price <= 0) return reject(RejectReason::InvalidPrice);
     if (o.stop && *o.stop <= 0) return reject(RejectReason::InvalidPrice);
     if (o.post_only && (o.type == OrderType::Market || o.tif != TimeInForce::GTC || o.stop))
@@ -136,7 +142,7 @@ void Engine::execute(const NewOrder& o, std::uint64_t seq) {
 
         if (stp_ != StpMode::None && maker->trader == o.trader) {
             if (stp_ == StpMode::CancelMaker || stp_ == StpMode::CancelBoth) {
-                out_.push_back(ev::Cancelled{maker->id, maker->remaining, CancelReason::SelfTrade});
+                out_.push_back(ev::Cancelled{maker->id, maker->remaining + maker->hidden, CancelReason::SelfTrade});
                 book_.erase(maker->id);
             }
             if (stp_ == StpMode::CancelTaker || stp_ == StpMode::CancelBoth) {
@@ -151,16 +157,27 @@ void Engine::execute(const NewOrder& o, std::uint64_t seq) {
         out_.push_back(ev::Trade{o.id, m.id, o.trader, m.trader, o.side, m.price, fill});
         last_ = m.price;
         remaining -= fill;
-        if (fill == m.remaining) book_.erase(m.id);
-        else book_.set_remaining(m.id, m.remaining - fill);
+        if (fill < m.remaining) {
+            book_.set_remaining(m.id, m.remaining - fill);
+        } else if (m.hidden > 0) {
+            // Iceberg: show the next slice at the back of the queue. If it is
+            // alone at its price it simply trades again on the next pass.
+            const Qty slice = std::min(m.display, m.hidden);
+            book_.requeue(m.id, slice, m.hidden - slice, ++seq_);
+            out_.push_back(ev::Replenished{m.id, slice, m.hidden - slice});
+        } else {
+            book_.erase(m.id);
+        }
     }
 
     if (remaining == 0) return;
     if (self_trade_kill) {
         out_.push_back(ev::Cancelled{o.id, remaining, CancelReason::SelfTrade});
     } else if (o.type == OrderType::Limit && o.tif == TimeInForce::GTC) {
-        book_.insert(Resting{o.id, o.trader, o.side, o.price, remaining, seq});
-        out_.push_back(ev::Rested{o.id, o.side, o.price, remaining});
+        const Qty visible = o.display > 0 ? std::min(o.display, remaining) : remaining;
+        const Qty hidden = remaining - visible;
+        book_.insert(Resting{o.id, o.trader, o.side, o.price, visible, seq, hidden, o.display});
+        out_.push_back(ev::Rested{o.id, o.side, o.price, visible, hidden});
     } else {
         out_.push_back(ev::Cancelled{o.id, remaining, CancelReason::Unfilled});
     }
@@ -199,7 +216,7 @@ void Engine::trigger_stops() {
 std::vector<Event> Engine::cancel(OrderId id) {
     out_.clear();
     if (const Resting* r = book_.find(id)) {
-        out_.push_back(ev::Cancelled{id, r->remaining, CancelReason::Requested});
+        out_.push_back(ev::Cancelled{id, r->remaining + r->hidden, CancelReason::Requested});
         book_.erase(id);
     } else if (auto it = stop_index_.find(id); it != stop_index_.end()) {
         auto& stops = it->second.side == Side::Buy ? buy_stops_ : sell_stops_;
@@ -225,15 +242,19 @@ std::vector<Event> Engine::modify(OrderId id, Price new_price, Qty new_qty) {
         return std::move(out_);
     }
     const Resting r = *found;
-    if (new_price == r.price && new_qty <= r.remaining) {
-        book_.set_remaining(id, new_qty);
+    if (new_price == r.price && new_qty <= r.remaining + r.hidden) {
+        // Shrink the hidden reserve first; the visible slice only shrinks
+        // once there is nothing left behind it.
+        const Qty visible = std::min(r.remaining, new_qty);
+        book_.set_remaining(id, visible);
+        book_.set_hidden(id, new_qty - visible);
         out_.push_back(ev::Modified{id, new_price, new_qty, true});
         return std::move(out_);
     }
     book_.erase(id);
     out_.push_back(ev::Modified{id, new_price, new_qty, false});
     NewOrder replacement{.id = id, .trader = r.trader, .side = r.side, .type = OrderType::Limit,
-                         .price = new_price, .qty = new_qty};
+                         .price = new_price, .qty = new_qty, .display = r.display};
     execute(replacement, ++seq_);
     trigger_stops();
     return std::move(out_);

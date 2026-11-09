@@ -91,7 +91,7 @@ for (const mb::Event& e : engine.submit({.id = 2, .trader = 8, .side = mb::Side:
 | `test_protocol` | text protocol parsing, errors, golden session output |
 | `test_fuzz` | differential fuzzing against a naive reference book (300 seeds x 400 commands), plus invariant fuzzing of stops and STP: never-crossed book, level totals, and per-order quantity conservation |
 
-CI runs the whole suite on GCC and Clang, with and without sanitizers.
+Run the whole suite under both GCC and Clang, with and without sanitizers, before changing the engine.
 
 ## Benchmark
 

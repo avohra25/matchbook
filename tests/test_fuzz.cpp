@@ -2,7 +2,9 @@
 //
 // 1. A deliberately naive reference book (a flat vector scanned on every
 //    match) is driven with the same random commands as the real engine, and
-//    every event and the full depth must agree after each command.
+//    every event and the full depth must agree after each command. Icebergs
+//    are included, so replenishment order and hidden-reserve accounting are
+//    checked against the reference too.
 // 2. Stops and self-trade prevention are fuzzed against invariants: the book
 //    never crosses, level totals match their orders, and every order's
 //    quantity is fully accounted for as fills, cancels, or what is still live.
@@ -24,7 +26,9 @@ public:
         std::vector<Event> out;
         auto it = find(o.id);
         if (it != orders_.end()) return {ev::Rejected{o.id, RejectReason::DuplicateId}};
-        if (o.qty <= 0) return {ev::Rejected{o.id, RejectReason::InvalidQuantity}};
+        if (o.qty <= 0 || o.display < 0) return {ev::Rejected{o.id, RejectReason::InvalidQuantity}};
+        if (o.display > 0 && (o.type == OrderType::Market || o.tif != TimeInForce::GTC))
+            return {ev::Rejected{o.id, RejectReason::InvalidCombination}};
         if (o.type == OrderType::Limit && o.price <= 0) return {ev::Rejected{o.id, RejectReason::InvalidPrice}};
         if (o.post_only && (o.type == OrderType::Market || o.tif != TimeInForce::GTC))
             return {ev::Rejected{o.id, RejectReason::InvalidCombination}};
@@ -40,7 +44,7 @@ public:
     std::vector<Event> cancel(OrderId id) {
         auto it = find(id);
         if (it == orders_.end()) return {ev::Rejected{id, RejectReason::UnknownOrder}};
-        std::vector<Event> out{ev::Cancelled{id, it->remaining, CancelReason::Requested}};
+        std::vector<Event> out{ev::Cancelled{id, it->remaining + it->hidden, CancelReason::Requested}};
         orders_.erase(it);
         return out;
     }
@@ -50,14 +54,16 @@ public:
         if (it == orders_.end()) return {ev::Rejected{id, RejectReason::UnknownOrder}};
         if (qty <= 0) return {ev::Rejected{id, RejectReason::InvalidQuantity}};
         if (px <= 0) return {ev::Rejected{id, RejectReason::InvalidPrice}};
-        if (px == it->price && qty <= it->remaining) {
-            it->remaining = qty;
+        if (px == it->price && qty <= it->remaining + it->hidden) {
+            Qty total = qty;
+            it->remaining = std::min(it->remaining, total);
+            it->hidden = total - it->remaining;
             return {ev::Modified{id, px, qty, true}};
         }
         Resting r = *it;
         orders_.erase(it);
         std::vector<Event> out{ev::Modified{id, px, qty, false}};
-        execute(NewOrder{.id = id, .trader = r.trader, .side = r.side, .price = px, .qty = qty}, out);
+        execute(NewOrder{.id = id, .trader = r.trader, .side = r.side, .price = px, .qty = qty, .display = r.display}, out);
         return out;
     }
 
@@ -102,7 +108,7 @@ private:
         if (o.tif == TimeInForce::FOK) {
             Qty avail = 0;
             for (const auto& r : orders_)
-                if (r.side != o.side && crosses(o, r.price)) avail += r.remaining;
+                if (r.side != o.side && crosses(o, r.price)) avail += r.remaining + r.hidden;
             if (avail < o.qty) {
                 out.push_back(ev::Cancelled{o.id, o.qty, CancelReason::Unfilled});
                 return;
@@ -116,12 +122,21 @@ private:
             out.push_back(ev::Trade{o.id, m->id, o.trader, m->trader, o.side, m->price, fill});
             left -= fill;
             m->remaining -= fill;
-            if (m->remaining == 0) orders_.erase(m);
+            if (m->remaining > 0) continue;
+            if (m->hidden > 0) {
+                m->remaining = std::min(m->display, m->hidden);
+                m->hidden -= m->remaining;
+                m->seq = ++seq_;
+                out.push_back(ev::Replenished{m->id, m->remaining, m->hidden});
+            } else {
+                orders_.erase(m);
+            }
         }
         if (left == 0) return;
         if (o.type == OrderType::Limit && o.tif == TimeInForce::GTC) {
-            orders_.push_back(Resting{o.id, o.trader, o.side, o.price, left, seq});
-            out.push_back(ev::Rested{o.id, o.side, o.price, left});
+            Qty visible = o.display > 0 ? std::min(o.display, left) : left;
+            orders_.push_back(Resting{o.id, o.trader, o.side, o.price, visible, seq, left - visible, o.display});
+            out.push_back(ev::Rested{o.id, o.side, o.price, visible, left - visible});
         } else {
             out.push_back(ev::Cancelled{o.id, left, CancelReason::Unfilled});
         }
@@ -147,6 +162,7 @@ NewOrder random_order(std::mt19937_64& rng, OrderId id, bool allow_stops) {
         o.tif = t == 0 ? TimeInForce::IOC : t == 1 ? TimeInForce::FOK : TimeInForce::GTC;
         o.post_only = pick(0, 9) == 0;
     }
+    if (pick(0, 4) == 0) o.display = pick(0, 12) == 0 ? -1 : pick(1, 6);  // iceberg (or invalid)
     if (allow_stops && pick(0, 5) == 0) {
         o.stop = pick(95, 105);
         o.post_only = false;
@@ -239,7 +255,7 @@ TEST(stops_and_self_trade_prevention_preserve_invariants) {
         std::size_t live_stops = 0;
         for (const auto& [id, qty] : submitted) {
             Qty live = 0;
-            if (const Resting* r = engine.book().find(id)) live = r->remaining;
+            if (const Resting* r = engine.book().find(id)) live = r->remaining + r->hidden;
             Qty accounted = filled[id] + cancelled[id] + live;
             if (accounted != qty) {
                 ++live_stops;  // only a still-parked stop may be unaccounted, and then wholly

@@ -37,6 +37,11 @@ struct NewOrder {
     /// it (buy: last >= stop, sell: last <= stop), then enters as a market or
     /// limit order depending on `type`.
     std::optional<Price> stop;
+    /// Iceberg orders: when non-zero, only this much of the order is shown in
+    /// the book at a time. Each time the visible slice fills, a new slice is
+    /// taken from the hidden reserve and joins the back of the queue. The
+    /// whole order still trades as a taker. GTC limit orders only.
+    Qty display = 0;
 };
 
 enum class RejectReason : std::uint8_t {
@@ -78,7 +83,8 @@ struct Rested {
     OrderId id;
     Side side;
     Price price;
-    Qty qty;
+    Qty qty;         ///< visible quantity
+    Qty hidden = 0;  ///< iceberg reserve behind it
     bool operator==(const Rested&) const = default;
 };
 struct Cancelled {
@@ -104,10 +110,18 @@ struct StopTriggered {
     Price last;
     bool operator==(const StopTriggered&) const = default;
 };
+/// An iceberg's visible slice filled and a new one was shown from its
+/// reserve. The order lost time priority and is now last at its price.
+struct Replenished {
+    OrderId id;
+    Qty qty;     ///< new visible slice
+    Qty hidden;  ///< reserve left behind it
+    bool operator==(const Replenished&) const = default;
+};
 }  // namespace ev
 
 using Event = std::variant<ev::Accepted, ev::Rejected, ev::Trade, ev::Rested, ev::Cancelled,
-                           ev::Modified, ev::StopParked, ev::StopTriggered>;
+                           ev::Modified, ev::StopParked, ev::StopTriggered, ev::Replenished>;
 
 std::string to_string(RejectReason r);
 std::string to_string(CancelReason r);
@@ -127,7 +141,9 @@ public:
     std::vector<Event> cancel(OrderId id);
     /// Cancel/replace a resting order. Reducing quantity at the same price keeps
     /// queue priority; any price change or size increase re-queues the order
-    /// (and may trade immediately if the new price crosses).
+    /// (and may trade immediately if the new price crosses). For icebergs the
+    /// quantity is the total (visible plus hidden); a reduction comes out of
+    /// the hidden reserve first.
     std::vector<Event> modify(OrderId id, Price new_price, Qty new_qty);
 
     [[nodiscard]] const Book& book() const { return book_; }
