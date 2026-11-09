@@ -6,7 +6,9 @@
 #include <list>
 #include <map>
 #include <optional>
+#include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace mb {
@@ -44,6 +46,21 @@ struct LevelView {
 };
 
 std::ostream& operator<<(std::ostream& os, const LevelView& v);
+
+/// One entry of the incremental (level 2) market-data feed: the new state of
+/// a price level. `qty == 0` means the level is gone.
+struct LevelUpdate {
+    Side side = Side::Buy;
+    Price price = 0;
+    Qty qty = 0;
+    std::size_t orders = 0;
+
+    [[nodiscard]] bool deleted() const { return qty == 0; }
+    bool operator==(const LevelUpdate&) const = default;
+};
+
+std::string to_string(const LevelUpdate& u);
+std::ostream& operator<<(std::ostream& os, const LevelUpdate& u);
 
 /// Price-time priority limit order book.
 ///
@@ -92,6 +109,19 @@ public:
     [[nodiscard]] std::size_t level_count(Side side) const { return levels(side).size(); }
     [[nodiscard]] bool empty() const { return index_.empty(); }
 
+    /// Starts (or stops) recording which price levels change. While on, every
+    /// insert, erase and quantity change remembers the level's state before
+    /// its first change, so take_level_updates() can report net differences.
+    void track_levels(bool on);
+    [[nodiscard]] bool tracking_levels() const { return track_; }
+
+    /// Returns the levels whose visible quantity or order count changed since
+    /// the last call, in the order they were first touched, and resets the
+    /// record. Levels that changed and then changed back are left out, so an
+    /// iceberg replenishing in place or a cancel/re-add of the same size
+    /// produces no update.
+    std::vector<LevelUpdate> take_level_updates();
+
     /// Visits resting orders on `side` in matching priority (best price first,
     /// then oldest first). `fn` returns false to stop early.
     template <class Fn>
@@ -113,12 +143,19 @@ private:
         std::list<Resting>::iterator it;
     };
 
+    void touch(Side side, Price price);
+    [[nodiscard]] LevelView view(Side side, Price price) const;
+
     Levels& levels(Side side) { return side == Side::Buy ? bids_ : asks_; }
     const Levels& levels(Side side) const { return side == Side::Buy ? bids_ : asks_; }
 
     Levels bids_;  // best bid = highest key
     Levels asks_;  // best ask = lowest key
     std::unordered_map<OrderId, Locator> index_;
+
+    bool track_ = false;
+    std::map<std::pair<Side, Price>, LevelView> before_;  // state at first touch
+    std::vector<std::pair<Side, Price>> touched_;         // first-touch order
 };
 
 }  // namespace mb

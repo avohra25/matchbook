@@ -146,6 +146,14 @@ public:
     /// the hidden reserve first.
     std::vector<Event> modify(OrderId id, Price new_price, Qty new_qty);
 
+    /// Turns the incremental market-data feed on or off (off by default, so
+    /// the matching path pays nothing for it unless asked).
+    void enable_market_data(bool on = true) { book_.track_levels(on); }
+    [[nodiscard]] bool market_data_enabled() const { return book_.tracking_levels(); }
+    /// Net level changes since the previous call: apply them in order to a
+    /// copy of the book's depth and it stays identical to book().depth().
+    std::vector<LevelUpdate> take_level_updates() { return book_.take_level_updates(); }
+
     [[nodiscard]] const Book& book() const { return book_; }
     [[nodiscard]] std::optional<Price> last_trade_price() const { return last_; }
     [[nodiscard]] std::size_t pending_stops() const { return stop_index_.size(); }
